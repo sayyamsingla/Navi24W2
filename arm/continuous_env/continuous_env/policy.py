@@ -1,142 +1,105 @@
+"""
+This code implements a simple decision-making system for an autonomous agent, 
+such as a car in a simulation. It defines five possible actions—LEFT, RIGHT, 
+ACCELERATE, BRAKE, and REVERSE—using an Action enum. The ActionState class tracks
+the current action, its duration, position history, and whether the agent is stuck. 
+The random_move function decides what the agent should do next. It monitors recent
+positions, and if the agent stops making progress (as if it has hit a wall), a 
+stuck_counter increases. Once the counter gets high enough, the system detects that the 
+agent is stuck. When stuck, it prioritizes REVERSE (most of the time) or BRAKE actions to 
+try and get free, holding that action for a random duration. If not stuck, it randomly 
+selects a new action weighted toward turning and accelerating. The function outputs an 
+action array representing how much to steer, accelerate, brake, or reverse, with values
+ kept in valid ranges. This allows the agent to move, detect when it’s stuck 
+ (like hitting a wall), and take corrective actions automatically.
+"""
+
 import numpy as np
 import numpy.typing as npt
 import random
 from enum import Enum
-from dataclasses import dataclass
 
-class Direction(Enum):
-	LEFT = [-1, 0, 0, 0]
-	RIGHT = [1, 0, 0, 0]
+class Action(Enum):
+    LEFT = "LEFT"
+    RIGHT = "RIGHT"
+    ACCELERATE = "ACCELERATE"
+    BRAKE = "BRAKE"
+    REVERSE = "REVERSE"
 
-class Speed(Enum):
-	FORWARD = [0, 1, 0, 0]
-	BACKWARDS = [0, 0, 0, 1]
+class ActionState:
+    def __init__(self):
+        self.current_action = None
+        self.action_duration = 0
+        self.stuck_counter = 0
+        self.prev_position = None
+        self.position_history = []
+        self.last_reward = 0
 
-@dataclass
-class Action:
-	direction: Direction
-	speed: Speed
+action_state = ActionState()
 
-	def get_action_as_open_ai_array(self):
-		combined_arr = []
-		for d, s in zip(self.direction.value, self.speed.value):
-			combined_arr.append(float(d + s))
-			
-		return np.array(combined_arr, dtype=np.float32)
+def random_move(s, s_prime=None, reward=None) -> npt.NDArray[np.float32]:
+    global action_state
+    
+    action = np.array([0.0, 0.0, 0.0, 0.0], dtype=float)
 
-num_frames_not_moved = 0
-prev_robot_pos = (0, 0)
-straight_line_acceleration: Speed = Speed.FORWARD
-straight_line_direction: Direction = Direction.LEFT
+    if s is not None and action_state.prev_position is None:
+        action_state.prev_position = s
+        action_state.position_history = [s]
+   
+    if s is not None:
+        if action_state.prev_position is not None:
+            action_state.prev_position = s
+            action_state.position_history.append(s)
 
-rand_direction = Direction.LEFT
-rand_speed = Speed.FORWARD
+            if len(action_state.position_history) > 10:
+                action_state.position_history.pop(0)
+    
 
-def straight_line(internal_state: list[list[int]]|None) -> npt.NDArray[np.float32]:
-	"""
-	Drives in a straight line until the state has not changed for 100 frames.
-	After 100 frames of no state change the car will change direction and
-	pick a new angle of attack
+    if reward is not None:
+        action_state.last_reward = reward
+    
 
-	Params:
-		internal_state (any) Internal state representation where 
-		                     0 is floor, 1 is robot, 2 is target 
-		                     and 3 is wall
-	
-	Returns:
-		A numpy array [w, x, y, z] where:
-			w [-1, 1]: Turning direction, -1 is left, 1 is right
-			x [0, 1]: Acceleration amount
-			y [0, 1]: Braking force
-			z [0, 1]: Reverse amount
-	"""
-	global num_frames_not_moved
-	global prev_robot_pos
-	global straight_line_acceleration
-	global straight_line_direction
+    is_stuck = False
+    if len(action_state.position_history) >= 5:
+        print("hit a wall")
+        is_stuck = action_state.stuck_counter > 15
+        action_state.stuck_counter += 1
+    else:
+        action_state.stuck_counter = 0
 
-	if internal_state == None:
-		print("Internal state is none, returning early")
-		return np.array([0.0, 0.0, 0.0, 0.0], dtype=float)
-
-	robot_pos = None
-	for y in range(len(internal_state)):
-		for x in range(len(internal_state[y])):
-			if internal_state[y][x] == 1:
-				robot_pos = (x, y)
-
-	if robot_pos == None:
-		print("Cound not find robot in internal state, returning early")
-		return np.array([0.0, 0.0, 0.0, 0.0], dtype=float)
-
-	if robot_pos == prev_robot_pos:
-		num_frames_not_moved += 1
-	else:
-		num_frames_not_moved = 0
-
-	if num_frames_not_moved == 60:
-		print("HIT WALL")
-		if straight_line_acceleration == Speed.FORWARD:
-			straight_line_acceleration = Speed.BACKWARDS
-		else:
-			straight_line_acceleration = Speed.FORWARD
-
-		straight_line_direction = random.choice([Direction.LEFT, Direction.RIGHT])
-
-		
-
-	prev_robot_pos = robot_pos
-	
-	action = Action(direction=straight_line_direction, speed=straight_line_acceleration)
-	return action.get_action_as_open_ai_array()
-	
+    if action_state.current_action is None or action_state.action_duration <= 0 or is_stuck:
+        if is_stuck:
+            action_state.current_action = Action.REVERSE if random.random() < 0.7 else Action.BRAKE
+            action_state.action_duration = random.randint(10, 20)
+            action_state.stuck_counter = 0
+        else:
+            actions = list(Action)
+            weights = [0.25, 0.25, 0.35, 0.0, 0.0] 
+            action_state.current_action = random.choices(actions, weights=weights, k=1)[0]
+            action_state.action_duration = random.randint(10, 30)
+    
+   
+    action_state.action_duration -= 1
+    
+    if action_state.current_action == Action.LEFT:
+        action[0] = -random.uniform(0.5, 1.0) 
+    elif action_state.current_action == Action.RIGHT:
+        action[0] = random.uniform(0.5, 1.0)
+    elif action_state.current_action == Action.ACCELERATE:
+        action[1] = random.uniform(0.7, 1.0)
+        # action[0] = random.uniform(-0.3, 0.3)
+    elif action_state.current_action == Action.BRAKE:
+        action[2] = random.uniform(0.5, 1.0)
+    elif action_state.current_action == Action.REVERSE:
+        action[3] = random.uniform(0.5, 1.0)
+        action[0] = random.uniform(-1.0, 1.0)
+    
+ 
+    action[0] = np.clip(action[0], -1.0, 1.0)
+    action[1] = np.clip(action[1], 0.0, 1.0)   
+    action[2] = np.clip(action[2], 0.0, 1.0)   
+    action[3] = np.clip(action[3], 0.0, 1.0)   
+    
+    return action
 
 
-def random_move(internal_state: list[list[int]]|None) -> npt.NDArray[np.float32]:
-	"""
-	Returns a numpy array [w, x, y, z] where:
-		w [-1, 1]: Turning direction, -1 is left, 1 is right
-		x [0, 1]: Acceleration amount
-		y [0, 1]: Braking force
-		z [0, 1]: Reverse amount
-	"""
-	global num_frames_not_moved
-	global prev_robot_pos
-	global rand_direction
-	global rand_speed
-
-	if internal_state == None:
-		print("Internal state is none, returning early")
-		return np.array([0.0, 0.0, 0.0, 0.0], dtype=float)
-
-	robot_pos = None
-	for y in range(len(internal_state)):
-		for x in range(len(internal_state[y])):
-			if internal_state[y][x] == 1:
-				robot_pos = (x, y)
-
-	if robot_pos == None:
-		print("Cound not find robot in internal state, returning early")
-		return np.array([0.0, 0.0, 0.0, 0.0], dtype=float)
-
-	if robot_pos == prev_robot_pos:
-		num_frames_not_moved += 1
-	else:
-		num_frames_not_moved = 0
-
-	# If we have not moved for 60 frames then we want to
-	# generate a new action to take until we hit another wall
-	if num_frames_not_moved == 120:
-		print("HIT WALL")
-		
-		rand_direction = random.choice(list(Direction))
-		print("New rand dir: ", rand_direction)
-		rand_speed = random.choice(list(Speed))
-		print("New rand speed: ", rand_speed)
-		num_frames_not_moved = 0
-
-	rand_action = Action(direction=rand_direction, speed=rand_speed)
-
-	prev_robot_pos = robot_pos
-
-	return rand_action.get_action_as_open_ai_array()
